@@ -64,10 +64,11 @@ python3 migrate.py
 The script will:
 
 1. List all folders in your Proton mailbox
-2. Count messages across all folders and report how many remain to copy
-3. For each folder, scan Gmail for messages already present (matched by `Message-ID` header) and skip them
-4. Copy remaining messages to Gmail, preserving timestamps and read/unread status
-5. Record each migrated message in `progress.db` so re-runs skip it instantly
+2. Discover Gmail's special folders automatically using IMAP special-use attributes (RFC 6154)
+3. Count messages across all folders and report how many remain to copy
+4. For each folder, scan Gmail for messages already present (matched by `Message-ID` header) and skip them
+5. Copy remaining messages to Gmail, preserving timestamps and read/unread status
+6. Record each migrated message in `progress.db` so re-runs skip it instantly
 
 Example output:
 
@@ -76,6 +77,14 @@ Connecting to Proton Bridge…
   Connected.
 Connecting to Gmail…
   Connected.
+Discovering Gmail special folders…
+  Gmail special folders discovered:
+    'Sent' → '[Gmail]/Sent Mail'
+    'Drafts' → '[Gmail]/Drafts'
+    'Trash' → '[Gmail]/Bin'
+    'Spam' → '[Gmail]/Spam'
+    'Junk' → '[Gmail]/Spam'
+    'Archive' → '[Gmail]/All Mail'
 Listing Proton folders…
   Found 4 folder(s): INBOX, Sent, Drafts, Work
 Counting messages…
@@ -104,14 +113,16 @@ Overall:  43%|████████████           | 9,300/21,750 msg 
 
 ### Proton → Gmail folder mapping
 
-| Proton | Gmail |
-|--------|-------|
+Gmail's special folder names vary by locale (e.g. `[Gmail]/Bin` vs `[Gmail]/Trash`). The script discovers the correct names automatically at startup using IMAP special-use attributes, so no manual configuration is needed.
+
+| Proton | Gmail (discovered at runtime) |
+|--------|-------------------------------|
 | INBOX | INBOX |
-| Sent | [Gmail]/Sent Mail |
-| Drafts | [Gmail]/Drafts |
-| Trash | [Gmail]/Trash |
-| Spam / Junk | [Gmail]/Spam |
-| Archive | [Gmail]/All Mail |
+| Sent | the folder with `\Sent` attribute |
+| Drafts | the folder with `\Drafts` attribute |
+| Trash | the folder with `\Trash` attribute |
+| Spam / Junk | the folder with `\Junk` attribute |
+| Archive | the folder with `\All` attribute |
 | Any other folder | Gmail label of the same name (created if absent) |
 
 ## Resuming after interruption
