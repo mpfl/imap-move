@@ -129,6 +129,15 @@ Gmail's special folder names vary by locale (e.g. `[Gmail]/Bin` vs `[Gmail]/Tras
 
 Just re-run `python3 migrate.py`. The script records every migrated message in `progress.db` (SQLite) and skips it on subsequent runs. It also re-scans Gmail for duplicates at the start of each folder, so it remains safe to run multiple times.
 
+## Error handling
+
+| Situation | Behaviour |
+|-----------|-----------|
+| Gmail drops the SSL connection mid-transfer | Reconnects automatically and retries, up to 5 times |
+| Other transient Gmail errors | Exponential backoff (2s, 4s, 8s…), up to 5 retries |
+| Message with no body | Logged as a warning, skipped, marked done |
+| Script interrupted at any point | Re-run resumes from where it left off |
+
 ## Tuning
 
 Two options in `config.ini` under `[options]`:

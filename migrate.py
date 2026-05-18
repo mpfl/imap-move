@@ -9,6 +9,7 @@ matching on Message-ID header.
 
 import configparser
 import email
+import imaplib
 import sqlite3
 import sys
 import time
@@ -94,6 +95,13 @@ def connect_gmail(cfg: configparser.ConfigParser) -> imapclient.IMAPClient:
     client = imapclient.IMAPClient("imap.gmail.com", port=993, ssl=True, use_uid=True)
     client.login(cfg["gmail"]["username"], cfg["gmail"]["app_password"])
     return client
+
+
+def reconnect_gmail(cfg: configparser.ConfigParser) -> imapclient.IMAPClient:
+    log("  Gmail connection lost — reconnecting…")
+    dst = connect_gmail(cfg)
+    log("  Reconnected.")
+    return dst
 
 
 def discover_gmail_folders(dst: imapclient.IMAPClient) -> tuple[dict[str, str], set[str]]:
@@ -182,13 +190,14 @@ def fetch_gmail_message_ids(dst: imapclient.IMAPClient, folder: str) -> set[str]
 def migrate_folder(
     src: imapclient.IMAPClient,
     dst: imapclient.IMAPClient,
+    cfg: configparser.ConfigParser,
     conn: sqlite3.Connection,
     src_folder: str,
     dst_folder: str,
     pbar: tqdm,
     batch_size: int,
     append_delay: float,
-) -> None:
+) -> imapclient.IMAPClient:
     log(f"\n── Folder: {src_folder!r} → {dst_folder!r}")
 
     src.select_folder(src_folder, readonly=True)
@@ -242,6 +251,10 @@ def migrate_folder(
                 try:
                     dst.append(dst_folder, raw, flags=dst_flags, msg_time=date)
                     break
+                except imaplib.IMAP4.abort:
+                    if attempt == 5:
+                        raise
+                    dst = reconnect_gmail(cfg)
                 except Exception as exc:
                     if attempt == 5:
                         raise
@@ -262,6 +275,7 @@ def migrate_folder(
         f"  Done: {n_new:,} copied, {n_dupe:,} skipped (already in Gmail)"
         + (f", {n_empty:,} empty" if n_empty else "")
     )
+    return dst
 
 
 def main() -> None:
@@ -307,9 +321,9 @@ def main() -> None:
             dst_folder = gmail_folder_for(src_folder, folder_map)
             pbar.set_postfix(folder=src_folder[:30], refresh=False)
             ensure_folder(dst, dst_folder, system_folders)
-            migrate_folder(
-                src, dst, conn,
-                src_folder, dst_folder,
+            dst = migrate_folder(
+                src, dst, cfg,
+                conn, src_folder, dst_folder,
                 pbar, batch_size, append_delay,
             )
 
