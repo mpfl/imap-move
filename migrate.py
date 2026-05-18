@@ -212,7 +212,7 @@ def migrate_folder(
 
     if not db_pending:
         log("  Nothing to do.")
-        return
+        return dst
 
     # Scan Gmail for Message-IDs to catch messages copied by other means
     gmail_known = fetch_gmail_message_ids(dst, dst_folder)
