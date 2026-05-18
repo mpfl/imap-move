@@ -97,6 +97,13 @@ def connect_gmail(cfg: configparser.ConfigParser) -> imapclient.IMAPClient:
     return client
 
 
+def reconnect_proton(cfg: configparser.ConfigParser) -> imapclient.IMAPClient:
+    log("  Proton Bridge connection lost — reconnecting…")
+    src = connect_proton(cfg)
+    log("  Reconnected.")
+    return src
+
+
 def reconnect_gmail(cfg: configparser.ConfigParser) -> imapclient.IMAPClient:
     log("  Gmail connection lost — reconnecting…")
     dst = connect_gmail(cfg)
@@ -197,11 +204,18 @@ def migrate_folder(
     pbar: tqdm,
     batch_size: int,
     append_delay: float,
-) -> imapclient.IMAPClient:
+) -> tuple[imapclient.IMAPClient, imapclient.IMAPClient]:
     log(f"\n── Folder: {src_folder!r} → {dst_folder!r}")
 
-    src.select_folder(src_folder, readonly=True)
-    all_uids = src.search("ALL")
+    for attempt in range(6):
+        try:
+            src.select_folder(src_folder, readonly=True)
+            all_uids = src.search("ALL")
+            break
+        except imaplib.IMAP4.abort:
+            if attempt == 5:
+                raise
+            src = reconnect_proton(cfg)
     log(f"  {len(all_uids):,} messages in Proton folder.")
 
     # Filter out messages already recorded in our progress DB
@@ -212,7 +226,7 @@ def migrate_folder(
 
     if not db_pending:
         log("  Nothing to do.")
-        return dst
+        return src, dst
 
     # Scan Gmail for Message-IDs to catch messages copied by other means
     gmail_known = fetch_gmail_message_ids(dst, dst_folder)
@@ -222,8 +236,15 @@ def migrate_folder(
     for i in range(0, len(db_pending), batch_size):
         batch = db_pending[i : i + batch_size]
         # Re-select source folder in case Gmail scan changed the selected folder
-        src.select_folder(src_folder, readonly=True)
-        messages = src.fetch(batch, ["RFC822", "INTERNALDATE", "FLAGS"])
+        for attempt in range(6):
+            try:
+                src.select_folder(src_folder, readonly=True)
+                messages = src.fetch(batch, ["RFC822", "INTERNALDATE", "FLAGS"])
+                break
+            except imaplib.IMAP4.abort:
+                if attempt == 5:
+                    raise
+                src = reconnect_proton(cfg)
 
         for uid, data in messages.items():
             raw = data.get(b"RFC822")
@@ -275,7 +296,7 @@ def migrate_folder(
         f"  Done: {n_new:,} copied, {n_dupe:,} skipped (already in Gmail)"
         + (f", {n_empty:,} empty" if n_empty else "")
     )
-    return dst
+    return src, dst
 
 
 def main() -> None:
@@ -321,7 +342,7 @@ def main() -> None:
             dst_folder = gmail_folder_for(src_folder, folder_map)
             pbar.set_postfix(folder=src_folder[:30], refresh=False)
             ensure_folder(dst, dst_folder, system_folders)
-            dst = migrate_folder(
+            src, dst = migrate_folder(
                 src, dst, cfg,
                 conn, src_folder, dst_folder,
                 pbar, batch_size, append_delay,
