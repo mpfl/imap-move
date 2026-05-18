@@ -20,25 +20,15 @@ from tqdm import tqdm
 CONFIG_FILE = Path("config.ini")
 DB_FILE = Path("progress.db")
 
-# Proton special folder names → Gmail IMAP folder names
-FOLDER_MAP = {
-    "Sent": "[Gmail]/Sent Mail",
-    "Drafts": "[Gmail]/Drafts",
-    "Trash": "[Gmail]/Trash",
-    "Spam": "[Gmail]/Spam",
-    "Junk": "[Gmail]/Spam",
-    "Archive": "[Gmail]/All Mail",
-}
-
-# Gmail system folders that cannot be created via IMAP CREATE
-GMAIL_SYSTEM = {
-    "[Gmail]/Sent Mail",
-    "[Gmail]/Drafts",
-    "[Gmail]/Trash",
-    "[Gmail]/Spam",
-    "[Gmail]/All Mail",
-    "[Gmail]/Starred",
-    "[Gmail]/Important",
+# RFC 6154 special-use attributes → Proton folder name(s) that map to them
+SPECIAL_USE_MAP = {
+    b"\\Sent":      ["Sent"],
+    b"\\Drafts":    ["Drafts"],
+    b"\\Trash":     ["Trash"],
+    b"\\Junk":      ["Spam", "Junk"],
+    b"\\All":       ["Archive"],
+    b"\\Flagged":   [],   # [Gmail]/Starred — no Proton equivalent
+    b"\\Important": [],   # [Gmail]/Important — no Proton equivalent
 }
 
 FLAGS_TO_PRESERVE = {b"\\Seen"}
@@ -106,6 +96,30 @@ def connect_gmail(cfg: configparser.ConfigParser) -> imapclient.IMAPClient:
     return client
 
 
+def discover_gmail_folders(dst: imapclient.IMAPClient) -> tuple[dict[str, str], set[str]]:
+    """
+    Discover Gmail's special-use folders via RFC 6154 IMAP attributes.
+    Returns (folder_map, system_folders) where folder_map maps Proton folder
+    names to their Gmail equivalents, and system_folders is the set of Gmail
+    folders that cannot be created via IMAP CREATE.
+    """
+    folder_map: dict[str, str] = {}
+    system_folders: set[str] = set()
+
+    for flags, _delim, name in dst.list_folders():
+        for attr, proton_names in SPECIAL_USE_MAP.items():
+            if attr in flags:
+                system_folders.add(name)
+                for proton_name in proton_names:
+                    folder_map[proton_name] = name
+
+    log("  Gmail special folders discovered:")
+    for proton, gmail in folder_map.items():
+        log(f"    {proton!r} → {gmail!r}")
+
+    return folder_map, system_folders
+
+
 def list_source_folders(src: imapclient.IMAPClient) -> list[str]:
     return [
         name
@@ -114,12 +128,12 @@ def list_source_folders(src: imapclient.IMAPClient) -> list[str]:
     ]
 
 
-def gmail_folder_for(proton_folder: str) -> str:
-    return FOLDER_MAP.get(proton_folder, proton_folder)
+def gmail_folder_for(proton_folder: str, folder_map: dict[str, str]) -> str:
+    return folder_map.get(proton_folder, proton_folder)
 
 
-def ensure_folder(dst: imapclient.IMAPClient, folder: str) -> None:
-    if folder in GMAIL_SYSTEM:
+def ensure_folder(dst: imapclient.IMAPClient, folder: str, system_folders: set[str]) -> None:
+    if folder in system_folders:
         return
     if not dst.folder_exists(folder):
         log(f"  Creating Gmail label: {folder!r}")
@@ -262,6 +276,9 @@ def main() -> None:
     dst = connect_gmail(cfg)
     print("  Connected.")
 
+    print("Discovering Gmail special folders…")
+    folder_map, system_folders = discover_gmail_folders(dst)
+
     batch_size = cfg.getint("options", "batch_size", fallback=25)
     append_delay = cfg.getfloat("options", "append_delay_seconds", fallback=0.1)
 
@@ -287,9 +304,9 @@ def main() -> None:
         dynamic_ncols=True,
     ) as pbar:
         for src_folder in src_folders:
-            dst_folder = gmail_folder_for(src_folder)
+            dst_folder = gmail_folder_for(src_folder, folder_map)
             pbar.set_postfix(folder=src_folder[:30], refresh=False)
-            ensure_folder(dst, dst_folder)
+            ensure_folder(dst, dst_folder, system_folders)
             migrate_folder(
                 src, dst, conn,
                 src_folder, dst_folder,
